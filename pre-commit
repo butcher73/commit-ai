@@ -1,0 +1,76 @@
+#!/bin/bash
+
+# Load environment variables from .env file (if it exists)
+if [ -f .env ]; then
+  export $(grep -v '^#' .env | xargs)
+fi
+
+# Get the diff of staged changes
+DIFF=$(git diff --staged)
+
+if [ -z "$DIFF" ]; then
+  echo "No staged changes. Skipping commit message generation."
+  exit 0
+fi
+
+# Base64 encode the diff
+BASE64_DIFF=$(echo -n "$DIFF" | base64)
+
+# Prepare the prompt for Gemini API
+PROMPT="Write a concise commit message (30-50 words) based on the following git diff (Base64 encoded):\n\n$BASE64_DIFF"
+
+# Call Gemini API
+GEMINI_API_KEY="$GEMINI_API_KEY" # Read API key from environment variable
+
+# Check if the API key is set
+if [ -z "$GEMINI_API_KEY" ]; then
+    echo "Error: GEMINI_API_KEY environment variable is not set."
+    exit 1
+fi
+
+GEMINI_API_ENDPOINT="https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$GEMINI_API_KEY"
+
+API_RESPONSE=$(curl -s -X POST \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [{
+      "parts": [{"text": "'"$PROMPT"'"}]
+    }],
+    "generationConfig": {
+      "temperature": 0.3,
+      "maxOutputTokens": 150
+    }
+  }' \
+  "$GEMINI_API_ENDPOINT")
+
+# ALWAYS print the raw API response for debugging
+# echo "Raw API Response:"
+# echo "$API_RESPONSE"
+
+# Check for curl errors
+if [ $? -ne 0 ]; then
+    echo "Error: curl command failed. Check your network connection and API endpoint."
+    exit 1
+fi
+
+# Extract the commit message
+COMMIT_MESSAGE=$(echo "$API_RESPONSE" | jq -r '.candidates[0].content.parts[0].text')
+
+# Handle API errors
+if [ -z "$COMMIT_MESSAGE" ]; then
+    echo "Error: Failed to generate commit message from API response."
+    exit 1
+fi
+
+# Clean up the commit message
+COMMIT_MESSAGE=$(echo "$COMMIT_MESSAGE" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+# Display the generated commit message
+echo "Generated commit message:"
+echo "$COMMIT_MESSAGE"
+echo ""
+
+# Use the generated commit message in the commit, bypassing the hook
+git commit --no-verify -m "$COMMIT_MESSAGE"
+
+echo "Commit complete."
