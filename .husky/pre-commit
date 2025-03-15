@@ -1,8 +1,11 @@
 #!/bin/bash
 
-# Load environment variables from .env file (if it exists)
+# Load environment variables from .env and .env.local (with priority to .env.local)
 if [ -f .env ]; then
   export $(grep -v '^#' .env | xargs)
+fi
+if [ -f .env.local ]; then
+  export $(grep -v '^#' .env.local | xargs)
 fi
 
 # Get the diff of staged changes
@@ -19,10 +22,7 @@ BASE64_DIFF=$(echo -n "$DIFF" | base64)
 # Prepare the prompt for Gemini API
 PROMPT="Write a concise commit message (30-50 words) based on the following git diff (Base64 encoded):\n\n$BASE64_DIFF"
 
-# Call Gemini API
-GEMINI_API_KEY="$GEMINI_API_KEY" # Read API key from environment variable
-
-# Check if the API key is set
+# Check Gemini API key
 if [ -z "$GEMINI_API_KEY" ]; then
     echo "Error: GEMINI_API_KEY environment variable is not set."
     exit 1
@@ -30,40 +30,43 @@ fi
 
 GEMINI_API_ENDPOINT="https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$GEMINI_API_KEY"
 
-API_RESPONSE=$(curl -s -X POST \
-  -H "Content-Type: application/json" \
-  -d '{
+# Use jq to safely construct the JSON payload
+JSON_PAYLOAD=$(jq -n \
+  --arg prompt "$PROMPT" \
+  '{
     "contents": [{
-      "parts": [{"text": "'"$PROMPT"'"}]
+      "parts": [{"text": $prompt}]
     }],
     "generationConfig": {
       "temperature": 0.3,
       "maxOutputTokens": 150
     }
-  }' \
+  }')
+
+# Make the API request
+API_RESPONSE=$(curl -s -X POST \
+  -H "Content-Type: application/json" \
+  -d "$JSON_PAYLOAD" \
   "$GEMINI_API_ENDPOINT")
 
-# ALWAYS print the raw API response for debugging
-# echo "Raw API Response:"
-# echo "$API_RESPONSE"
-
-# Check for curl errors
 if [ $? -ne 0 ]; then
     echo "Error: curl command failed. Check your network connection and API endpoint."
     exit 1
 fi
 
-# Extract the commit message
-COMMIT_MESSAGE=$(echo "$API_RESPONSE" | jq -r '.candidates[0].content.parts[0].text')
+# Use Python to parse the JSON and extract the commit message
+COMMIT_MESSAGE=$(python3 -c '
+import sys, json
+data = json.load(sys.stdin)
+commit = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+print(commit)
+' <<< "$API_RESPONSE")
 
-# Handle API errors
 if [ -z "$COMMIT_MESSAGE" ]; then
-    echo "Error: Failed to generate commit message from API response."
+    echo "Error: Failed to generate commit message from API response. Raw response:"
+    echo "$API_RESPONSE"
     exit 1
 fi
-
-# Clean up the commit message
-COMMIT_MESSAGE=$(echo "$COMMIT_MESSAGE" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 
 # Display the generated commit message
 echo "Generated commit message:"
