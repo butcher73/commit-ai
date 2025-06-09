@@ -8,11 +8,19 @@ if [ -f .env.local ]; then
   export $(grep -v '^#' .env.local | xargs)
 fi
 
-# Get the diff of staged changes
-DIFF=$(git diff --staged)
+# Get the diff of staged changes, excluding specific file types.
+# The ':(exclude)' syntax tells Git to ignore paths matching the pattern.
+DIFF=$(git diff --staged \
+  ":(exclude)*.csv" \
+  ":(exclude)*.sbg" \
+  ":(exclude)*.pnpm-lock.yaml" \
+  ":(exclude)*.yarn.lock" \
+  ":(exclude)*.package-lock.json" \
+  ":(exclude)*.json" \
+  ":(exclude)*.svg")
 
 if [ -z "$DIFF" ]; then
-  echo "No staged changes. Skipping commit message generation."
+  echo "No relevant staged changes to commit message generation."
   exit 0
 fi
 
@@ -30,23 +38,20 @@ fi
 
 GEMINI_API_ENDPOINT="https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$GEMINI_API_KEY"
 
-# Use jq to safely construct the JSON payload
-JSON_PAYLOAD=$(jq -n \
-  --arg prompt "$PROMPT" \
-  '{
+# Use direct JSON string with curl, piping the content to avoid 'Argument list too long'
+JSON_PAYLOAD_CONTENT='{
     "contents": [{
-      "parts": [{"text": $prompt}]
+      "parts": [{"text": "'"$PROMPT"'"}]
     }],
     "generationConfig": {
       "temperature": 0.3,
       "maxOutputTokens": 150
     }
-  }')
+  }'
 
-# Make the API request
-API_RESPONSE=$(curl -s -X POST \
+API_RESPONSE=$(echo "$JSON_PAYLOAD_CONTENT" | curl -s -X POST \
   -H "Content-Type: application/json" \
-  -d "$JSON_PAYLOAD" \
+  -d @- \
   "$GEMINI_API_ENDPOINT")
 
 if [ $? -ne 0 ]; then
